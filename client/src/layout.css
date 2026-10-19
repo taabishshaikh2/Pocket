@@ -7,10 +7,10 @@ button:focus-visible, a:focus-visible { outline: 3px solid #829f62; outline-offs
 input, select { font-size: 16px; min-height: 48px; min-width: 0; max-width: 100%; }
 input[type="date"], input[type="month"] { display: block; min-width: 0; }
 form label { font-size: 13px; line-height: 1.5; }
-header { height: auto; min-height: 76px; padding: 12px max(16px,env(safe-area-inset-left)); gap: 12px; }
+header { height: auto; min-height: 76px; padding: 12px max(16px,env(safe-area-inset-left)); gap: 12px; flex-wrap: wrap; }
 .brand { min-height: 44px; font-size: 24px; }
 .badge, .local, .account span { display: none; }
-.account { gap: 0; flex-shrink: 0; }
+.account { gap: 0; flex-shrink: 1; min-width: 0; max-width: 100%; }
 .account .textBtn { font-size: 13px; padding: 8px 12px; }
 main { width: 100%; min-width: 0; padding: 26px max(16px,env(safe-area-inset-left)) 0; }
 .heading { flex-direction: column; align-items: stretch; gap: 20px; margin-bottom: 25px; }

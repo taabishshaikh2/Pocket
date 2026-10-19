@@ -104,3 +104,9 @@ For reliable cookie authentication, use HTTPS sibling custom domains such as app
 Local development is unchanged: npm run dev, root .env from .env.example, CROSS_SITE_COOKIES=false, and VITE_API_URL blank (Vite proxies /api).
 
 References: https://render.com/docs/web-services · https://render.com/docs/static-sites · https://render.com/docs/outbound-ip-addresses · https://render.com/docs/redirects-rewrites
+
+## Administrator account
+
+Set ADMIN_EMAIL=taabishshaikh2@gmail.com on the Render API service (this requested address is also the server default). The existing account is promoted to administrator at server startup. Deploy/restart the backend, then sign out and sign in or reload the app. The client shows Admin settings based on the server-returned role. If the account does not exist yet, create it normally and restart the server. No password is changed.
+
+Admin can add/rename/archive/restore expense and investment categories, pause/reopen new signups, and disable/restore non-admin accounts. Financial records stay scoped to their owners. Changes are recorded in a short audit feed. Other remains protected. Rent and Home are separate categories; old Rent & home remains archived for historical entries.

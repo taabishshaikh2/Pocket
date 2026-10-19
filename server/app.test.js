@@ -5,7 +5,8 @@ import mongoose from 'mongoose';
 import MongoStore from 'connect-mongo';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createApp } from './app.js';
-import { User, Month } from './models.js';
+import { bootstrapAdmin } from './catalog.js';
+import { User, Month, Audit } from './models.js';
 import { summarize } from './validation.js';
 
 let mongo, store, app;
@@ -42,7 +43,7 @@ test('protects writes, authenticates users, and revokes logout sessions', async 
 test('CRUD persists across sessions and isolates accounts and months', async () => {
   const a = await account('owner@example.com'), b = await account('other@example.com');
   await send(a,'put','/api/months/2026-10/salary',{salary:50000,received:'2026-10-01'}).expect(204);
-  const entry = {name:'Rent',type:'expense',category:'Rent & home',date:'2026-10-02',amount:15000};
+  const entry = {name:'Rent',type:'expense',category:'Rent',date:'2026-10-02',amount:15000};
   const created = await send(a,'post','/api/months/2026-10/entries',entry).expect(201);
   await send(a,'post','/api/months/2026-10/entries',{name:'SIP',type:'investment',category:'Mutual funds',date:'2026-10-03',amount:10000}).expect(201);
   const result = await a.get('/api/months/2026-10').expect(200);
@@ -66,7 +67,7 @@ test('rejects invalid dates, monetary precision, categories, and unexpected fiel
     await send(a,'put','/api/months/2026-10/salary',values).expect(400);
   }
   await a.get('/api/months/2026-13').expect(400);
-  await send(a,'post','/api/months/2026-10/entries',{name:'X',type:'investment',category:'Rent & home',date:'2026-10-01',amount:10}).expect(400);
+  await send(a,'post','/api/months/2026-10/entries',{name:'X',type:'investment',category:'Rent',date:'2026-10-01',amount:10}).expect(400);
 });
 test('imports legacy records once, preserving existing cloud months and local IDs',async()=>{
   const a=await account('import@example.com');
@@ -189,4 +190,80 @@ test('password minimum is six characters for registration and login', async () =
   await send(agent, 'post', '/api/auth/register', { email: 'six-chars@example.com', password: 'abc123' }).expect(201);
   await send(agent, 'post', '/api/auth/logout', {}).expect(204);
   await send(agent, 'post', '/api/auth/login', { email: 'six-chars@example.com', password: 'abc123' }).expect(200);
+});
+
+
+test('admin bootstrap promotes only an existing specified account; roles cannot be self-assigned', async () => {
+  assert.equal(await bootstrapAdmin('missing-admin@example.com'), false);
+  const agent = request.agent(app);
+  await send(agent, 'post', '/api/auth/register', { email: 'intruder@example.com', password, role: 'admin' }).expect(400);
+  const admin = await account('admin@example.com');
+  assert.equal((await admin.get('/api/auth/me')).body.user.role, 'user');
+  assert.equal(await bootstrapAdmin('ADMIN@example.com'), true);
+  assert.equal((await admin.get('/api/auth/me')).body.user.role, 'admin');
+  const standard = await account('ordinary@example.com');
+  await send(standard, 'post', '/api/admin/categories', { type: 'expense', label: 'Sneaky' }).expect(403);
+  await standard.get('/api/admin/users').expect(403);
+  await standard.get('/api/admin/audit').expect(403);
+  await standard.get('/api/admin/settings').expect(403);
+});
+
+test('admin categories support Rent/Home, history-preserving rename/archive, and protected Other', async () => {
+  const admin = request.agent(app);
+  await send(admin,'post','/api/auth/login',{email:'admin@example.com',password}).expect(200);
+  const member = await account('category-member@example.com');
+  const catalog = (await member.get('/api/categories').expect(200)).body;
+  assert.ok(catalog.some(c=>c.type==='expense'&&c.label==='Rent'&&c.active));
+  assert.ok(catalog.some(c=>c.type==='expense'&&c.label==='Home'&&c.active));
+  assert.ok(catalog.some(c=>c.label==='Rent & home'&&!c.active));
+  const {body:category} = await send(admin,'post','/api/admin/categories',{type:'expense',label:'Education'}).expect(201);
+  const entry = {name:'Course',amount:120,type:'expense',date:'2026-10-02',category:'Education',categoryId:category._id};
+  const {body:created} = await send(member,'post','/api/months/2026-10/entries',entry).expect(201);
+  await send(admin,'put','/api/admin/categories/'+category._id,{label:'Learning',active:true}).expect(200);
+  const old = (await member.get('/api/months/2026-10')).body.entries[0];
+  assert.equal(old.category,'Education');
+  await send(admin,'post','/api/admin/categories',{type:'expense',label:'education'}).expect(400);
+  await send(admin,'put','/api/admin/categories/'+category._id,{label:'Learning',active:false}).expect(200);
+  await send(member,'post','/api/months/2026-10/entries',{...entry,category:'Learning'}).expect(400);
+  await send(member,'put','/api/months/2026-10/entries/'+created.id,{...entry,amount:125}).expect(204);
+  assert.equal((await member.get('/api/months/2026-10')).body.entries[0].category,'Education');
+  const backup={'2026-09':{salary:0,received:'',entries:[{...entry,id:'old-backup',date:'2026-09-02'}]}};
+  await send(member,'post','/api/import',backup).expect(200);
+  const other = catalog.find(c=>c.type==='expense'&&c.isOther);
+  await send(admin,'put','/api/admin/categories/'+other._id,{label:'Misc',active:true}).expect(400);
+  await send(admin,'put','/api/admin/categories/'+other._id,{label:'Other',active:false}).expect(400);
+  assert.ok(await Audit.countDocuments({action:'category.update'})>=2);
+});
+
+test('Other details are optional, bounded, saved, editable, and cleared for another category', async () => {
+  const agent=await account('other-notes@example.com');
+  const values={name:'One-off purchase',amount:10,type:'expense',date:'2026-10-01',category:'Other'};
+  const {body:entry}=await send(agent,'post','/api/months/2026-10/entries',{...values,otherReason:'A gift for a friend'}).expect(201);
+  assert.equal(entry.otherReason,'A gift for a friend');
+  await send(agent,'post','/api/months/2026-10/entries',values).expect(201);
+  await send(agent,'post','/api/months/2026-10/entries',{...values,otherReason:'x'.repeat(201)}).expect(400);
+  const url='/api/months/2026-10/entries/'+entry.id;
+  await send(agent,'put',url,{...values,otherReason:'Updated note'}).expect(204);
+  assert.equal((await agent.get('/api/months/2026-10')).body.entries.find(e=>e.id===entry.id).otherReason,'Updated note');
+  await send(agent,'put',url,{...values,category:'Home',otherReason:'Should be removed'}).expect(204);
+  assert.equal((await agent.get('/api/months/2026-10')).body.entries.find(e=>e.id===entry.id).otherReason,'');
+});
+
+test('admin can reversibly disable accounts and pause signups without disabling admin', async () => {
+  const admin=request.agent(app);
+  await send(admin,'post','/api/auth/login',{email:'admin@example.com',password}).expect(200);
+  const member=await account('access-member@example.com');
+  const me=await User.findOne({email:'access-member@example.com'});
+  await send(admin,'put','/api/admin/users/'+me.id,{disabled:true}).expect(200);
+  await member.get('/api/months/2026-10').expect(401);
+  await send(member,'post','/api/auth/login',{email:me.email,password}).expect(401);
+  await send(admin,'put','/api/admin/users/'+me.id,{disabled:false}).expect(200);
+  await send(member,'post','/api/auth/login',{email:me.email,password}).expect(200);
+  const adminUser=await User.findOne({email:'admin@example.com'});
+  await send(admin,'put','/api/admin/users/'+adminUser.id,{disabled:true}).expect(400);
+  await send(admin,'put','/api/admin/users/'+me.id,{disabled:false,role:'admin'}).expect(400);
+  await send(admin,'put','/api/admin/settings',{registrationOpen:false}).expect(200);
+  await send(request(app),'post','/api/auth/register',{email:'paused@example.com',password}).expect(403);
+  await send(admin,'put','/api/admin/settings',{registrationOpen:true}).expect(200);
+  assert.ok((await admin.get('/api/admin/audit')).body.length>0);
 });

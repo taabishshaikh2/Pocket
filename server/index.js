@@ -1,8 +1,9 @@
 import mongoose from 'mongoose';
 import MongoStore from 'connect-mongo';
 import { createApp } from './app.js';
-import { User, Month } from './models.js';
-const { MONGODB_URI, SESSION_SECRET, APP_ORIGIN, PORT = 3001, NODE_ENV, TRUST_PROXY, CROSS_SITE_COOKIES, SERVE_CLIENT } = process.env;
+import { seedCategories, bootstrapAdmin } from './catalog.js';
+import { User, Month, Category } from './models.js';
+const { MONGODB_URI, SESSION_SECRET, APP_ORIGIN, PORT = 3001, NODE_ENV, TRUST_PROXY, CROSS_SITE_COOKIES, SERVE_CLIENT, ADMIN_EMAIL = 'taabishshaikh2@gmail.com' } = process.env;
 if (!MONGODB_URI || !APP_ORIGIN) { console.error('Set MONGODB_URI and APP_ORIGIN in .env. See .env.example.'); process.exit(1); }
 try {
   const appOrigin = new URL(APP_ORIGIN).origin;
@@ -11,7 +12,9 @@ try {
   store.on('error', () => console.error('Session storage is unavailable. Check MongoDB connectivity.'));
   const app = createApp({ store, secret: SESSION_SECRET, origin: appOrigin, production: NODE_ENV === 'production', trustProxy: TRUST_PROXY === '1', crossSiteCookies: CROSS_SITE_COOKIES === 'true', serveClient: SERVE_CLIENT !== 'false' });
   await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 10000 });
-  await Promise.all([User.init(), Month.init()]);
+  await Promise.all([User.init(), Month.init(), Category.init()]);
+  await seedCategories();
+  if (!await bootstrapAdmin(ADMIN_EMAIL)) console.log('Configured admin account not found. Create that account and restart the server to activate it.');
   const server = app.listen(Number(PORT), '0.0.0.0', () => console.log(`Pocket API: http://localhost:${PORT}`));
   const shutdown = () => server.close(async () => { await store.close(); await mongoose.disconnect(); process.exit(0); });
   process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);

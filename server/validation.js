@@ -1,6 +1,6 @@
 import { z } from 'zod';
 export const categories = {
-  expense: ['Food & groceries', 'Rent & home', 'Shopping', 'Transport', 'Bills & utilities', 'Health', 'Entertainment', 'Other'],
+  expense: ['Food & groceries', 'Rent', 'Home', 'Shopping', 'Transport', 'Bills & utilities', 'Health', 'Entertainment', 'Other'],
   investment: ['Mutual funds', 'Stocks', 'Fixed deposit', 'Gold', 'Retirement', 'Other'],
 };
 export const monthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
@@ -19,8 +19,8 @@ export const tripSchema = z.object({
 export const contributionSchema = z.object({ amount: amount.refine(n => n > 0, 'Add an amount greater than zero.') }).strict();
 export const entrySchema = z.object({
   name: z.string().trim().min(1).max(80), amount: amount.refine(n => n > 0, 'Amount must be greater than zero.'),
-  type: z.enum(['expense', 'investment']), date: dateSchema, category: z.string(),
-}).strict().refine(e => categories[e.type].includes(e.category), 'Choose a valid category.');
+  type: z.enum(['expense', 'investment']), date: dateSchema, category: z.string().trim().min(1).max(60), categoryId: z.string().max(100).optional(), otherReason: z.string().trim().max(200).optional(),
+}).strict();
 export const credentialsSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(254),
   password: z.string().min(6, 'Use at least 6 characters.').max(72),
@@ -30,7 +30,7 @@ export const importSchema = z.record(monthSchema, z.object({
   entries: z.array(z.object({ id: z.string().min(1).max(100), ...entrySchema.shape }).strict()).max(10000),
 }).strict()).refine(data => Object.entries(data).every(([month, m]) =>
   (!m.received || m.received.startsWith(month)) && (m.salary === 0 || m.received) &&
-  m.entries.every(e => e.date.startsWith(month) && categories[e.type].includes(e.category)) &&
+  m.entries.every(e => e.date.startsWith(month)) &&
   new Set(m.entries.map(e => e.id)).size === m.entries.length
 ), 'Imported dates, categories, or transaction IDs are invalid.');
 export function assertMonthDate(month, date) {
@@ -42,3 +42,8 @@ export function summarize(month) {
   const investment = month.entries.filter(e => e.type === 'investment').reduce((n, e) => n + cents(e.amount), 0);
   return { expenses: expense / 100, investments: investment / 100, remaining: (cents(month.salary) - expense - investment) / 100 };
 }
+
+export const categoryCreateSchema = z.object({ type: z.enum(['expense', 'investment']), label: z.string().trim().min(1).max(60) }).strict();
+export const categoryUpdateSchema = z.object({ label: z.string().trim().min(1).max(60), active: z.boolean() }).strict();
+export const accountUpdateSchema = z.object({ disabled: z.boolean() }).strict();
+export const settingsSchema = z.object({ registrationOpen: z.boolean() }).strict();
