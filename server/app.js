@@ -1,0 +1,143 @@
+import express from 'express';
+import session from 'express-session';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
+import bcrypt from 'bcryptjs';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { User, Month, Trip } from './models.js';
+import { monthSchema, salarySchema, entrySchema, credentialsSchema, importSchema, assertMonthDate, summarize, tripSchema, contributionSchema, cents } from './validation.js';
+
+const regenerate = req => new Promise((resolve, reject) => req.session.regenerate(err => err ? reject(err) : resolve()));
+const persist = req => new Promise((resolve, reject) => req.session.save(err => err ? reject(err) : resolve()));
+const emptyMonth = month => ({ month, salary: 0, received: '', entries: [] });
+export function createApp({ store, secret, origin, production = false, trustProxy = false }) {
+  if (!secret || secret.length < 32 || secret.startsWith('replace-')) throw new Error('Set SESSION_SECRET to a random value of at least 32 characters.');
+  const app = express();
+  app.disable('x-powered-by');
+  if (trustProxy) app.set('trust proxy', 1);
+  app.use(helmet({ contentSecurityPolicy: { directives: {
+    'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+    'font-src': ["'self'", 'https://fonts.gstatic.com'],
+  } } }));
+  app.use(express.json({ limit: '2mb' }));
+  app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+  app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  app.use('/api', (req, res, next) => {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.get('origin') !== origin) return res.status(403).json({ error: 'Request origin is not allowed.' });
+    next();
+  });
+  const cookie = { httpOnly: true, secure: production, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 };
+  app.use(session({ name: 'pocket.sid', secret, store, resave: false, saveUninitialized: false, cookie }));
+  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many sign-in attempts. Try again later.' } });
+  async function authenticate(req, res) {
+    const values = credentialsSchema.parse(req.body);
+    let user;
+    if (req.path === '/register') {
+      const hash = await bcrypt.hash(values.password, 12);
+      user = await User.create({ email: values.email, passwordHash: hash });
+    } else {
+      user = await User.findOne({ email: values.email });
+      const valid = await bcrypt.compare(values.password, user?.passwordHash || '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxlTLzqgVZJmZhUZVWOGQZLZB8e');
+      if (!user || !valid) return res.status(401).json({ error: 'Email or password is incorrect.' });
+    }
+    await regenerate(req); req.session.userId = user.id; await persist(req);
+    res.status(req.path === '/register' ? 201 : 200).json({ email: user.email });
+  }
+  const auth = express.Router();
+  auth.post('/register', authLimiter, authenticate);
+  auth.post('/login', authLimiter, authenticate);
+  auth.get('/me', async (req, res) => {
+    const user = req.session.userId ? await User.findById(req.session.userId) : null;
+    res.json({ user: user ? { email: user.email } : null });
+  });
+  auth.post('/logout', (req, res, next) => req.session.destroy(err => {
+    if (err) return next(err);
+    res.clearCookie('pocket.sid', { httpOnly: true, secure: production, sameSite: 'lax' }); res.sendStatus(204);
+  }));
+  app.use('/api/auth', auth);
+  app.use('/api', (req, res, next) => req.session.userId ? next() : res.status(401).json({ error: 'Please sign in to continue.' }));
+  app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 200, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many requests. Please wait a minute.' } }));
+  app.get('/api/months/:month', async (req, res) => {
+    const month = monthSchema.parse(req.params.month);
+    const record = await Month.findOne({ userId: req.session.userId, month }).lean() || emptyMonth(month);
+    res.json({ month, salary: record.salary, received: record.received, entries: record.entries, totals: summarize(record) });
+  });
+  app.put('/api/months/:month/salary', async (req, res) => {
+    const month = monthSchema.parse(req.params.month), values = salarySchema.parse(req.body); assertMonthDate(month, values.received);
+    await Month.updateOne({ userId: req.session.userId, month }, { $set: values }, { upsert: true, runValidators: true }); res.sendStatus(204);
+  });
+  app.post('/api/months/:month/entries', async (req, res) => {
+    const month = monthSchema.parse(req.params.month), values = entrySchema.parse(req.body); assertMonthDate(month, values.date);
+    const entry = { id: randomUUID(), ...values };
+    await Month.updateOne({ userId: req.session.userId, month }, { $push: { entries: entry } }, { upsert: true, runValidators: true }); res.status(201).json(entry);
+  });
+  app.put('/api/months/:month/entries/:id', async (req, res) => {
+    const month = monthSchema.parse(req.params.month), values = entrySchema.parse(req.body); assertMonthDate(month, values.date);
+    const result = await Month.updateOne({ userId: req.session.userId, month, 'entries.id': req.params.id }, { $set: { 'entries.$': { id: req.params.id, ...values } } }, { runValidators: true });
+    if (!result.matchedCount) return res.status(404).json({ error: 'Transaction not found.' }); res.sendStatus(204);
+  });
+  app.delete('/api/months/:month/entries/:id', async (req, res) => {
+    const month = monthSchema.parse(req.params.month);
+    const result = await Month.updateOne({ userId: req.session.userId, month, 'entries.id': req.params.id }, { $pull: { entries: { id: req.params.id } } });
+    if (!result.matchedCount) return res.status(404).json({ error: 'Transaction not found.' }); res.sendStatus(204);
+  });
+  app.post('/api/import', async (req, res) => {
+    const data = importSchema.parse(req.body); let imported = 0, skipped = 0;
+    // Import only missing months: repeated requests cannot duplicate or overwrite cloud data.
+    for (const [month, values] of Object.entries(data)) {
+      try {
+        const result = await Month.updateOne({ userId: req.session.userId, month }, { $setOnInsert: values }, { upsert: true, runValidators: true });
+        if (result.upsertedCount) imported++; else skipped++;
+      } catch (error) { if (error.code === 11000) skipped++; else throw error; }
+    }
+    res.json({ imported, skipped });
+  });
+  const tripJSON = trip => ({ id: String(trip._id), name: trip.name, budget: trip.budgetCents / 100, saved: trip.savedCents / 100, targetDate: trip.targetDate });
+  const tripValues = values => ({ name: values.name, budgetCents: cents(values.budget), savedCents: cents(values.saved), targetDate: values.targetDate });
+  app.get('/api/trips', async (req, res) => {
+    const trips = await Trip.find({ userId: req.session.userId }).sort({ createdAt: -1 }).lean();
+    res.json(trips.map(tripJSON));
+  });
+  app.post('/api/trips', async (req, res) => {
+    const values = tripSchema.parse(req.body);
+    const trip = await Trip.create({ userId: req.session.userId, ...tripValues(values) });
+    res.status(201).json(tripJSON(trip));
+  });
+  app.param('tripId', (req, res, next, id) => /^[a-f\d]{24}$/i.test(id) ? next() : res.status(404).json({ error: 'Trip not found.' }));
+  app.put('/api/trips/:tripId', async (req, res) => {
+    const values = tripSchema.parse(req.body);
+    const trip = await Trip.findOneAndUpdate({ _id: req.params.tripId, userId: req.session.userId }, { $set: tripValues(values) }, { new: true, runValidators: true });
+    if (!trip) return res.status(404).json({ error: 'Trip not found.' });
+    res.json(tripJSON(trip));
+  });
+  app.post('/api/trips/:tripId/savings', async (req, res) => {
+    const values = contributionSchema.parse(req.body), addition = cents(values.amount);
+    const trip = await Trip.findOneAndUpdate({ _id: req.params.tripId, userId: req.session.userId, savedCents: { $lte: cents(1_000_000_000) - addition } }, { $inc: { savedCents: addition } }, { new: true, runValidators: true });
+    if (!trip) {
+      const exists = await Trip.exists({ _id: req.params.tripId, userId: req.session.userId });
+      return res.status(exists ? 400 : 404).json({ error: exists ? 'Saved amount exceeds the supported limit.' : 'Trip not found.' });
+    }
+    res.json(tripJSON(trip));
+  });
+  app.delete('/api/trips/:tripId', async (req, res) => {
+    const result = await Trip.deleteOne({ _id: req.params.tripId, userId: req.session.userId });
+    if (!result.deletedCount) return res.status(404).json({ error: 'Trip not found.' });
+    res.sendStatus(204);
+  });
+  app.use('/api', (_req, res) => res.status(404).json({ error: 'API endpoint not found.' }));
+  if (production) {
+    const directory = fileURLToPath(new URL('../client/dist/', import.meta.url));
+    app.use(express.static(directory));
+    app.get('/{*path}', (_req, res) => res.sendFile(path.join(directory, 'index.html')));
+  }
+  app.use((error, _req, res, _next) => {
+    if (error.name === 'ZodError') return res.status(400).json({ error: error.issues[0]?.message || 'Invalid input.' });
+    if (error.code === 11000) return res.status(409).json({ error: 'This account or month already exists. Refresh and try again.' });
+    if (error.type === 'entity.too.large') return res.status(413).json({ error: 'Import is too large. Maximum size is 2 MB.' });
+    const status = error.status === 400 ? 400 : 500;
+    res.status(status).json({ error: status === 400 ? error.message : 'Unable to complete the request. Please try again.' });
+  });
+  return app;
+}
