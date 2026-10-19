@@ -181,3 +181,12 @@ test('refuses unsafe cross-site session and origin configurations', () => {
   assert.throws(() => createApp({ ...base, production: true }), /must use HTTPS/);
   assert.throws(() => createApp({ ...base, origin: origin + '/' }), /without a trailing slash/);
 });
+
+
+test('password minimum is six characters for registration and login', async () => {
+  const agent = request.agent(app);
+  await send(agent, 'post', '/api/auth/register', { email: 'six-chars@example.com', password: 'abc12' }).expect(400);
+  await send(agent, 'post', '/api/auth/register', { email: 'six-chars@example.com', password: 'abc123' }).expect(201);
+  await send(agent, 'post', '/api/auth/logout', {}).expect(204);
+  await send(agent, 'post', '/api/auth/login', { email: 'six-chars@example.com', password: 'abc123' }).expect(200);
+});

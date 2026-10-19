@@ -23,7 +23,7 @@ export const entrySchema = z.object({
 }).strict().refine(e => categories[e.type].includes(e.category), 'Choose a valid category.');
 export const credentialsSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(254),
-  password: z.string().min(12, 'Use at least 12 characters.').max(72),
+  password: z.string().min(6, 'Use at least 6 characters.').max(72),
 }).strict().refine(v => Buffer.byteLength(v.password, 'utf8') <= 72, 'Password must fit within 72 UTF-8 bytes.');
 export const importSchema = z.record(monthSchema, z.object({
   salary: amount, received: z.union([dateSchema, z.literal('')]),
