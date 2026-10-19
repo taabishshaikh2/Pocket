@@ -22,3 +22,15 @@ export function createApiClient(base = '', fetcher = globalThis.fetch) {
     return payload;
   };
 }
+
+
+export async function authenticateAndVerify(api, action, credentials) {
+  if (!['login', 'register'].includes(action)) throw new Error('Invalid sign-in action.');
+  await api('/auth/' + action, { method: 'POST', body: credentials });
+  // A successful password check does not prove the browser accepted its cookie.
+  const session = await api('/auth/me');
+  if (!session?.user) {
+    throw new Error('We could not keep you signed in. This website’s sign-in connection needs to be updated.');
+  }
+  return session.user;
+}

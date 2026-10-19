@@ -13,7 +13,8 @@
     "build": "vite build --config vite.config.js",
     "start": "node --env-file-if-exists=.env server/index.js",
     "pretest": "npm run build",
-    "test": "node --test server/*.test.js"
+    "test": "node --test server/*.test.js",
+    "start:client": "node --env-file-if-exists=.env gateway/index.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

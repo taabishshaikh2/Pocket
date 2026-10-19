@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import MongoStore from 'connect-mongo';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createApp } from './app.js';
+import { createGateway } from '../gateway/app.js';
 import { bootstrapAdmin } from './catalog.js';
 import { User, Month, Audit } from './models.js';
 import { summarize } from './validation.js';
@@ -266,4 +267,26 @@ test('admin can reversibly disable accounts and pause signups without disabling 
   await send(request(app),'post','/api/auth/register',{email:'paused@example.com',password}).expect(403);
   await send(admin,'put','/api/admin/settings',{registrationOpen:true}).expect(200);
   assert.ok((await admin.get('/api/admin/audit')).body.length>0);
+});
+
+
+test('same-origin frontend gateway retains secure first-party login, authenticated reads, and logout', async () => {
+  const gatewayOrigin = 'https://pocket-frontend.example';
+  const proxyStore = MongoStore.create({ mongoUrl: mongo.getUri('pocket-tests') });
+  const backend = createApp({ store: proxyStore, secret: 'gateway-test-secret-longer-than-thirty-two-characters', origin: gatewayOrigin, production: true, trustProxy: true, serveClient: false });
+  const server = await new Promise(resolve => { const s=backend.listen(0,'127.0.0.1',()=>resolve(s)); });
+  try {
+    const gateway = createGateway({ target: 'http://127.0.0.1:' + server.address().port, trustProxy: true });
+    await request(gateway).get('/').expect(200);
+    const login = await request(gateway).post('/api/auth/login').set('Origin',gatewayOrigin).set('X-Forwarded-Proto','https').send({email:'owner@example.com',password}).expect(200);
+    const cookie = login.headers['set-cookie'][0];
+    assert.match(cookie,/Secure/); assert.match(cookie,/HttpOnly/); assert.match(cookie,/SameSite=Lax/); assert.doesNotMatch(cookie,/Domain=/i);
+    const sessionCookie=cookie.split(';')[0];
+    const user = await request(gateway).get('/api/auth/me').set('Cookie',sessionCookie).set('X-Forwarded-Proto','https').expect(200);
+    assert.equal(user.body.user.email,'owner@example.com');
+    await request(gateway).get('/api/months/2026-10').set('Cookie',sessionCookie).set('X-Forwarded-Proto','https').expect(200);
+    await request(gateway).post('/api/auth/logout').set('Origin','https://evil.example').set('Cookie',sessionCookie).set('X-Forwarded-Proto','https').send({}).expect(403);
+    await request(gateway).post('/api/auth/logout').set('Origin',gatewayOrigin).set('Cookie',sessionCookie).set('X-Forwarded-Proto','https').send({}).expect(204);
+    assert.equal((await request(gateway).get('/api/auth/me').set('Cookie',sessionCookie).expect(200)).body.user,null);
+  } finally { await new Promise(resolve=>server.close(resolve)); await proxyStore.close(); }
 });

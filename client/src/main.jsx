@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 import './mern.css';
 import Trips from './Trips.jsx';
-import { createApiClient } from './api.js';
+import { createApiClient, authenticateAndVerify } from './api.js';
 import AdminPanel from './AdminPanel.jsx';
 import './layout.css';
 
@@ -20,7 +20,7 @@ function App() {
 }
 function Auth({onSuccess}) {
   const [register,setRegister]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
-  async function submit(event){event.preventDefault();setBusy(true);setError('');const form=new FormData(event.currentTarget);try{onSuccess(await api('/auth/'+(register?'register':'login'),{method:'POST',body:{email:form.get('email'),password:form.get('password')}}));}catch(e){setError(e.message);}finally{setBusy(false);}}
+  async function submit(event){event.preventDefault();setBusy(true);setError('');const form=new FormData(event.currentTarget);try{onSuccess(await authenticateAndVerify(api,register?'register':'login',{email:form.get('email'),password:form.get('password')}));}catch(e){setError(e.message);}finally{setBusy(false);}}
   return <main className="authLayout"><div><div className="eyebrow">A LITTLE CLARITY GOES A LONG WAY</div><h1>Your money.<br/><span>In perspective.</span></h1><p>Salary, everyday spending, and a future worth saving for.<br/>Your personal finances, together across your devices.</p><div className="authArt"><span>✦</span><p>Make room for<br/>what matters.</p></div></div><section className="panel authPanel"><h2>{register?'Create your pocket':'Welcome back'}</h2><p>{register?'A fresh start for your finances.':'Sign in to see your month clearly.'}</p><form onSubmit={submit}><label htmlFor="email">Email address</label><input id="email" name="email" type="email" inputMode="email" autoCapitalize="none" spellCheck={false} maxLength={254} autoComplete="email" required/><label htmlFor="password">Password</label><input id="password" name="password" type="password" minLength={register?6:1} maxLength={72} autoComplete={register?'new-password':'current-password'} required/>{register&&<small className="hint">At least 6 characters.</small>}{error&&<p className="error" role="alert">{error}</p>}<button className="dark" disabled={busy}>{busy?'Please wait…':register?'Create account ↗':'Sign in ↗'}</button></form><button className="textBtn authSwitch" disabled={busy} onClick={()=>{setRegister(!register);setError('');}}>{register?'Already have an account? Sign in':'New here? Create an account'}</button></section></main>;
 }
 function Dashboard({onExpired,adminOpen,user}) {

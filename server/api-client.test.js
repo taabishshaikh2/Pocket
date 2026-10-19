@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createApiClient } from '../client/src/api.js';
+import { createApiClient, authenticateAndVerify } from '../client/src/api.js';
 
 test('client uses the configured API origin and includes session credentials', async () => {
   let call;
@@ -23,4 +23,15 @@ test('client keeps local proxy support and handles no-content and failed respons
   const html = createApiClient('', async () => ({ ok: true, status: 200, json: async () => { throw new Error('HTML'); } }));
   await assert.rejects(() => html('/auth/me'), /invalid response/);
   assert.throws(() => createApiClient('https://example.com/api'), /without a path/);
+});
+
+
+test('sign-in requires a persisted browser session before showing the dashboard', async () => {
+  const calls=[];
+  const accepted=async(path)=>{calls.push(path);return path==='/auth/me'?{user:{email:'test@example.com',role:'user'}}:{email:'test@example.com'};};
+  assert.deepEqual(await authenticateAndVerify(accepted,'login',{email:'test@example.com',password:'test-only'}),{email:'test@example.com',role:'user'});
+  assert.deepEqual(calls,['/auth/login','/auth/me']);
+  const blocked=async(path)=>path==='/auth/me'?{user:null}:{email:'test@example.com'};
+  await assert.rejects(()=>authenticateAndVerify(blocked,'login',{}),/could not keep you signed in/);
+  await assert.rejects(()=>authenticateAndVerify(blocked,'register',{}),/could not keep you signed in/);
 });

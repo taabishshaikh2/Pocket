@@ -1,3 +1,5 @@
+> **Safari update:** For cross-browser sign-in, use the same-origin setup in [SAFARI.md](SAFARI.md). The older direct cross-site Static Site setup below can fail in Safari.
+
 # Deploy Pocket as separate Render services
 
 Code is configured. You create GitHub and Render resources yourself. Replace example URLs with the actual URLs Render assigns. No real secrets belong in this file.
