@@ -43,3 +43,11 @@ The existing API can already serve the React build. On pocketbackend change the 
 Automated tests exercise first-party cookie issuance, session reuse through the gateway, API body/path forwarding, logout, and rejection of foreign-Origin writes. The login form now confirms /api/auth/me before showing the dashboard. Physical Safari confirmation must happen after deploying the same-origin setup.
 
 References: https://webkit.org/blog/10218/full-third-party-cookie-blocking-and-more/ and https://render.com/docs/web-services
+
+## Automatic backend wake-up
+
+Opening the frontend document now starts a background GET to the configured backend /api/health without delaying HTML. Visits are coalesced while a request is pending and throttled to at most one document-triggered request every 30 seconds. /healthz monitoring does not initiate wake-ups. No credentials are sent in this background health request.
+
+The browser also requests /api/health through the same-origin proxy before restoring its session. While a sleeping API wakes, it shows a helpful loading card and retries only startup reads. Requests have a 20-second timeout, retries wait 3 seconds, and the total startup budget is 3 minutes. A Retry button remains available after that. There are no background keepalive loops, and writes are never automatically retried.
+
+Push and redeploy the frontend Web Service to activate this update. Existing API_PROXY_TARGET, APP_ORIGIN, and first-party cookie settings stay the same. Free hosting still has a cold-start delay; this change handles that delay rather than eliminating it.

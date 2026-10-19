@@ -5,6 +5,7 @@ import './mern.css';
 import Trips from './Trips.jsx';
 import { createApiClient, authenticateAndVerify } from './api.js';
 import AdminPanel from './AdminPanel.jsx';
+import { loadStartupSession } from './startup.js';
 import './layout.css';
 
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
@@ -14,9 +15,18 @@ const empty = { salary: 0, received: '', entries: [], totals: { expenses: 0, inv
 const api = createApiClient(import.meta.env.VITE_API_URL);
 function App() {
   const [user,setUser] = useState(null), [checking,setChecking] = useState(true), [bootError,setBootError] = useState(''), [adminOpen,setAdminOpen] = useState(false);
-  async function checkSession() { setChecking(true); setBootError(''); try { const result = await api('/auth/me'); setUser(result.user); } catch { setBootError('Cannot connect to Pocket. Check that the server is running and try again.'); } finally { setChecking(false); } }
-  useEffect(() => { checkSession(); }, []);
-  return <><header><a className="brand" href="/"><span className="logo">p.</span> pocket<span className="badge">PERSONAL FINANCE</span></a>{user && <div className="account"><span>{user.email}</span>{user.role==='admin'&&<button className="textBtn" onClick={()=>setAdminOpen(v=>!v)}>{adminOpen?'Dashboard':'Admin settings'}</button>}<button className="textBtn" onClick={async()=>{try{await api('/auth/logout',{method:'POST'});setUser(null);}catch{setBootError('Sign-out failed. Try again.');}}}>Sign out</button></div>}</header>{bootError && <div className="error global" role="alert">{bootError}<button onClick={checkSession}>Retry</button></div>}{checking ? <main><p>Opening your pocket…</p></main> : user ? <Dashboard key={user.email} onExpired={()=>setUser(null)} adminOpen={adminOpen} user={user}/> : !bootError && <Auth onSuccess={setUser}/>}</>;
+  const [waking,setWaking]=useState(false),startup=useRef(null);
+  async function checkSession() {
+    startup.current?.abort();
+    const controller=new AbortController();startup.current=controller;
+    setChecking(true);setWaking(false);setBootError('');
+    const hint=setTimeout(()=>{if(startup.current===controller&&!controller.signal.aborted)setWaking(true);},1500);
+    try {const result=await loadStartupSession(api,{signal:controller.signal});if(startup.current===controller&&!controller.signal.aborted)setUser(result.user);}
+    catch(error){if(!controller.signal.aborted&&startup.current===controller)setBootError(error.message||'Pocket could not connect. Please try again.');}
+    finally {clearTimeout(hint);if(startup.current===controller&&!controller.signal.aborted)setChecking(false);}
+  }
+  useEffect(() => {checkSession();return()=>startup.current?.abort();}, []);
+  return <><header><a className="brand" href="/"><span className="logo">p.</span> pocket<span className="badge">PERSONAL FINANCE</span></a>{user && <div className="account"><span>{user.email}</span>{user.role==='admin'&&<button className="textBtn" onClick={()=>setAdminOpen(v=>!v)}>{adminOpen?'Dashboard':'Admin settings'}</button>}<button className="textBtn" onClick={async()=>{try{await api('/auth/logout',{method:'POST'});setUser(null);}catch{setBootError('Sign-out failed. Try again.');}}}>Sign out</button></div>}</header>{bootError && <div className="error global" role="alert">{bootError}<button onClick={checkSession}>Retry</button></div>}{checking ? <main className="startupScreen"><section className="panel startupCard" aria-busy="true" aria-live="polite"><span className="startupMark" aria-hidden="true">p.</span><h1>{waking?'Waking up Pocket…':'Opening your pocket…'}</h1><p>{waking?'Getting everything ready. The first visit after a break can take a little longer.':'Your money, a little clearer.'}</p><div className="startupProgress" aria-hidden="true"><i/></div><small>Your sign-in will open automatically when Pocket is ready.</small></section></main> : user ? <Dashboard key={user.email} onExpired={()=>setUser(null)} adminOpen={adminOpen} user={user}/> : !bootError && <Auth onSuccess={setUser}/>}</>;
 }
 function Auth({onSuccess}) {
   const [register,setRegister]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');

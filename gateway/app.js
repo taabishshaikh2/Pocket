@@ -46,6 +46,22 @@ export function createGateway({ target, production = false, trustProxy = false, 
     res.on('close', () => { if (!res.writableEnded) proxy.destroy(); });
     req.pipe(proxy);
   });
+  let warming = false, lastWarmup = -Infinity;
+  function wakeBackend() {
+    if (warming || Date.now() - lastWarmup < 30000) return;
+    warming = true; lastWarmup = Date.now();
+    const transport = upstream.protocol === 'https:' ? https : http;
+    const warmup = transport.get(new URL('/api/health', upstream), { headers: { 'Cache-Control': 'no-cache' } }, response => {
+      response.resume();
+      response.on('end', () => { warming = false; });
+      response.on('error', () => { warming = false; });
+    });
+    warmup.setTimeout(120000, () => warmup.destroy());
+    warmup.on('error', () => { warming = false; });
+  }
+  // Start waking the API while serving the document; never delay the HTML.
+  // No timer keeps the backend alive: this runs only on an actual page visit.
+  app.use((req, _res, next) => { if (req.method === 'GET' && req.path === '/') wakeBackend(); next(); });
   app.use(express.static(directory));
   app.get('/{*path}', (_req, res) => res.sendFile(path.join(directory, 'index.html')));
   return app;

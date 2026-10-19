@@ -20,3 +20,16 @@ test('gateway refuses unsafe target configuration',()=>{
   assert.throws(()=>createGateway({target:'http://example.com',production:true}),/must use HTTPS/);
   assert.throws(()=>createGateway({target:'https://user:password@example.com'}),/without a path/);
 });
+
+
+test('opening the frontend wakes the backend without delaying HTML or repeatedly pinging it',async()=>{
+  let calls=0,signalWake;const woken=new Promise(resolve=>{signalWake=resolve;});
+  const server=http.createServer((req,res)=>{calls++;assert.equal(req.url,'/api/health');assert.equal(req.headers.cookie,undefined);res.writeHead(200,{'Content-Type':'application/json'});res.end('{"status":"ok"}');signalWake();});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  try{
+    const gateway=createGateway({target:'http://127.0.0.1:'+server.address().port});
+    await request(gateway).get('/healthz').expect(200);assert.equal(calls,0);
+    await request(gateway).get('/').expect(200);await woken;assert.equal(calls,1);
+    await request(gateway).get('/').expect(200);assert.equal(calls,1);
+  }finally{await new Promise(resolve=>server.close(resolve));}
+});
