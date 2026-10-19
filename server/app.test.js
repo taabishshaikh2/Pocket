@@ -139,3 +139,45 @@ test('trip validation rejects invalid money, dates, ownership fields, and excess
   await send(agent, 'post', '/api/trips/' + trip.id + '/savings', { amount: 1 }).expect(400);
   await send(agent, 'delete', '/api/trips/not-an-id').expect(404);
 });
+
+
+test('CORS permits the exact client and credentialed preflights without allowing other origins', async () => {
+  const allowed = await request(app).options('/api/months/2026-10/salary')
+    .set('Origin', origin).set('Access-Control-Request-Method', 'PUT')
+    .set('Access-Control-Request-Headers', 'content-type').expect(204);
+  assert.equal(allowed.headers['access-control-allow-origin'], origin);
+  assert.equal(allowed.headers['access-control-allow-credentials'], 'true');
+  assert.match(allowed.headers['access-control-allow-methods'], /PUT/);
+  const rejected = await request(app).get('/api/auth/me').set('Origin', 'https://untrusted.example').expect(200);
+  assert.equal(rejected.headers['access-control-allow-origin'], undefined);
+  await request(app).post('/api/auth/logout').set('Origin', 'https://untrusted.example').send({}).expect(403);
+});
+
+test('API-only production uses secure cross-site cookies and clears matching logout cookies', async () => {
+  const splitStore = MongoStore.create({ mongoUrl: mongo.getUri('pocket-tests') });
+  try {
+    const frontend = 'https://client.example';
+    const splitApp = createApp({ store: splitStore, secret: 'split-hosting-test-secret-with-more-than-32-characters', origin: frontend, production: true, trustProxy: true, crossSiteCookies: true, serveClient: false });
+    await request(splitApp).get('/').expect(404);
+    await request(splitApp).get('/api/health').expect(200);
+    const result = await request(splitApp).post('/api/auth/register').set('Origin', frontend).set('X-Forwarded-Proto', 'https').send({ email: 'split@example.com', password }).expect(201);
+    const cookie = result.headers['set-cookie'][0];
+    assert.match(cookie, /HttpOnly/); assert.match(cookie, /Secure/); assert.match(cookie, /SameSite=None/);
+    assert.equal(result.headers['access-control-allow-origin'], frontend);
+    const sessionCookie = cookie.split(';')[0];
+    const me = await request(splitApp).get('/api/auth/me').set('Origin', frontend).set('X-Forwarded-Proto', 'https').set('Cookie', sessionCookie).expect(200);
+    assert.equal(me.body.user.email, 'split@example.com');
+    const logout = await request(splitApp).post('/api/auth/logout').set('Origin', frontend).set('X-Forwarded-Proto', 'https').set('Cookie', sessionCookie).send({}).expect(204);
+    assert.match(logout.headers['set-cookie'][0], /SameSite=None/);
+    assert.match(logout.headers['set-cookie'][0], /Secure/);
+    const after = await request(splitApp).get('/api/auth/me').set('Cookie', sessionCookie).expect(200);
+    assert.equal(after.body.user, null);
+  } finally { await splitStore.close(); }
+});
+
+test('refuses unsafe cross-site session and origin configurations', () => {
+  const base = { secret: 'configuration-test-secret-with-more-than-32-characters', origin };
+  assert.throws(() => createApp({ ...base, crossSiteCookies: true }), /require production HTTPS/);
+  assert.throws(() => createApp({ ...base, production: true }), /must use HTTPS/);
+  assert.throws(() => createApp({ ...base, origin: origin + '/' }), /without a trailing slash/);
+});

@@ -31,6 +31,10 @@ Generate a session secret with `node -e "console.log(require('node:crypto').rand
 3. Choose **Connect → Drivers**, copy the connection URI into `MONGODB_URI`, replace placeholders, and specify `/pocket` before the query string. URL-encode special characters in the database password.
 4. Keep credentials in `.env` locally and in the host's environment settings for production.
 
+## Separate Render client and server hosting
+
+The code supports a React Static Site and an Express Web Service, with exact-origin CORS, credentialed API requests, configurable secure cookies, and API-only server mode. Follow [RENDER.md](RENDER.md) for the complete GitHub and Render steps. Existing local and combined deployments remain supported.
+
 ## Deploy to a Node.js host
 
 The MERN runtime cannot run on the existing static Sites deployment. Deploy this `pocket` directory to a service that supports a persistent Node.js process and outbound MongoDB connections.

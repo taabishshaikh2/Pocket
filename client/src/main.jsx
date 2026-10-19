@@ -3,18 +3,14 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 import './mern.css';
 import Trips from './Trips.jsx';
+import { createApiClient } from './api.js';
 
 const categories = { expense: ['Food & groceries','Rent & home','Shopping','Transport','Bills & utilities','Health','Entertainment','Other'], investment: ['Mutual funds','Stocks','Fixed deposit','Gold','Retirement','Other'] };
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 const money = value => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(value);
 const dateText = value => new Date(value+'T00:00:00').toLocaleDateString('en-IN', { day:'numeric', month:'short' });
 const empty = { salary: 0, received: '', entries: [], totals: { expenses: 0, investments: 0, remaining: 0 } };
-async function api(url, { body, ...options } = {}) {
-  const response = await fetch('/api'+url, { credentials:'same-origin', ...options, ...(body !== undefined ? { headers: { 'Content-Type':'application/json' }, body:JSON.stringify(body) } : {}) });
-  const payload = response.status === 204 ? null : await response.json().catch(() => null);
-  if (!response.ok) { const error = new Error(payload?.error || 'Cannot reach the server. Please try again.'); error.status = response.status; throw error; }
-  return payload;
-}
+const api = createApiClient(import.meta.env.VITE_API_URL);
 function App() {
   const [user,setUser] = useState(null), [checking,setChecking] = useState(true), [bootError,setBootError] = useState('');
   async function checkSession() { setChecking(true); setBootError(''); try { const result = await api('/auth/me'); setUser(result.user); } catch { setBootError('Cannot connect to Pocket. Check that the server is running and try again.'); } finally { setChecking(false); } }

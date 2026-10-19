@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import session from 'express-session';
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
@@ -12,8 +13,12 @@ import { monthSchema, salarySchema, entrySchema, credentialsSchema, importSchema
 const regenerate = req => new Promise((resolve, reject) => req.session.regenerate(err => err ? reject(err) : resolve()));
 const persist = req => new Promise((resolve, reject) => req.session.save(err => err ? reject(err) : resolve()));
 const emptyMonth = month => ({ month, salary: 0, received: '', entries: [] });
-export function createApp({ store, secret, origin, production = false, trustProxy = false }) {
+export function createApp({ store, secret, origin, production = false, trustProxy = false, crossSiteCookies = false, serveClient = true }) {
   if (!secret || secret.length < 32 || secret.startsWith('replace-')) throw new Error('Set SESSION_SECRET to a random value of at least 32 characters.');
+  const parsedOrigin = new URL(origin);
+  if (!['http:', 'https:'].includes(parsedOrigin.protocol) || parsedOrigin.origin !== origin) throw new Error('APP_ORIGIN must be an HTTP(S) origin without a trailing slash.');
+  if (production && parsedOrigin.protocol !== 'https:') throw new Error('Production APP_ORIGIN must use HTTPS.');
+  if (crossSiteCookies && !production) throw new Error('Cross-site cookies require production HTTPS.');
   const app = express();
   app.disable('x-powered-by');
   if (trustProxy) app.set('trust proxy', 1);
@@ -21,6 +26,13 @@ export function createApp({ store, secret, origin, production = false, trustProx
     'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
     'font-src': ["'self'", 'https://fonts.gstatic.com'],
   } } }));
+  // Handle credentialed preflights before sessions and keep the write Origin check.
+  app.use('/api', cors({
+    origin: (requestOrigin, callback) => callback(null, requestOrigin === origin ? origin : false),
+    credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type'],
+  }));
   app.use(express.json({ limit: '2mb' }));
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
@@ -28,7 +40,7 @@ export function createApp({ store, secret, origin, production = false, trustProx
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.get('origin') !== origin) return res.status(403).json({ error: 'Request origin is not allowed.' });
     next();
   });
-  const cookie = { httpOnly: true, secure: production, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 };
+  const cookie = { httpOnly: true, secure: production, sameSite: crossSiteCookies ? 'none' : 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 };
   app.use(session({ name: 'pocket.sid', secret, store, resave: false, saveUninitialized: false, cookie }));
   const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many sign-in attempts. Try again later.' } });
   async function authenticate(req, res) {
@@ -54,7 +66,7 @@ export function createApp({ store, secret, origin, production = false, trustProx
   });
   auth.post('/logout', (req, res, next) => req.session.destroy(err => {
     if (err) return next(err);
-    res.clearCookie('pocket.sid', { httpOnly: true, secure: production, sameSite: 'lax' }); res.sendStatus(204);
+    res.clearCookie('pocket.sid', { httpOnly: true, secure: production, sameSite: cookie.sameSite, path: '/' }); res.sendStatus(204);
   }));
   app.use('/api/auth', auth);
   app.use('/api', (req, res, next) => req.session.userId ? next() : res.status(401).json({ error: 'Please sign in to continue.' }));
@@ -127,7 +139,7 @@ export function createApp({ store, secret, origin, production = false, trustProx
     res.sendStatus(204);
   });
   app.use('/api', (_req, res) => res.status(404).json({ error: 'API endpoint not found.' }));
-  if (production) {
+  if (production && serveClient) {
     const directory = fileURLToPath(new URL('../client/dist/', import.meta.url));
     app.use(express.static(directory));
     app.get('/{*path}', (_req, res) => res.sendFile(path.join(directory, 'index.html')));
