@@ -84,3 +84,7 @@ npm run build
 ```
 
 `npm test` first builds the frontend, then uses a temporary real MongoDB process from `mongodb-memory-server`. The first run needs network access to download the MongoDB test binary. Tests cover authentication, logout, user isolation, CRUD, dates, monetary precision, persistence across sessions, import idempotency, preservation of existing data, and production frontend serving.
+
+## Adjust an existing expense
+
+Open Edit on an expense, then choose Add amount or Subtract. Enter only the difference; the dialog previews the new total. Save applies the adjustment atomically to the current saved expense and reloads monthly totals. Subtraction can reduce an expense to zero but cannot make it negative. Set total remains available for normal amount/detail edits. New expenses and investments must start above zero. Adjustments retain the entry's name, date, category, and notes.

@@ -290,3 +290,31 @@ test('same-origin frontend gateway retains secure first-party login, authenticat
     assert.equal((await request(gateway).get('/api/auth/me').set('Cookie',sessionCookie).expect(200)).body.user,null);
   } finally { await new Promise(resolve=>server.close(resolve)); await proxyStore.close(); }
 });
+
+
+test('expense adjustments add/subtract accurately, retain details, and update monthly totals',async()=>{
+  const agent=await account('adjust-owner@example.com');
+  const values={name:'Groceries',amount:100,type:'expense',date:'2026-10-02',category:'Other',otherReason:'Shared shopping'};
+  const {body:entry}=await send(agent,'post','/api/months/2026-10/entries',values).expect(201);
+  const url='/api/months/2026-10/entries/'+entry.id+'/adjust';
+  assert.equal((await send(agent,'post',url,{operation:'add',amount:25.25}).expect(200)).body.amount,125.25);
+  assert.equal((await send(agent,'post',url,{operation:'subtract',amount:5.15}).expect(200)).body.amount,120.1);
+  let record=(await agent.get('/api/months/2026-10')).body;
+  assert.equal(record.totals.expenses,120.1);assert.equal(record.totals.remaining,-120.1);assert.equal(record.entries[0].otherReason,'Shared shopping');
+  await send(agent,'post',url,{operation:'subtract',amount:120.11}).expect(400);
+  assert.equal((await send(agent,'post',url,{operation:'subtract',amount:120.1}).expect(200)).body.amount,0);
+  await send(agent,'put','/api/months/2026-10/entries/'+entry.id,{...values,amount:0,name:'Cleared groceries'}).expect(204);
+  assert.equal((await agent.get('/api/months/2026-10')).body.totals.expenses,0);
+});
+test('concurrent adjustments accumulate and enforce account/type/range boundaries',async()=>{
+  const owner=request.agent(app);await send(owner,'post','/api/auth/login',{email:'adjust-owner@example.com',password}).expect(200);
+  const record=(await owner.get('/api/months/2026-10')).body,entry=record.entries[0],url='/api/months/2026-10/entries/'+entry.id+'/adjust';
+  await Promise.all([send(owner,'post',url,{operation:'add',amount:0.1}).expect(200),send(owner,'post',url,{operation:'add',amount:0.2}).expect(200)]);
+  assert.equal((await owner.get('/api/months/2026-10')).body.entries[0].amount,0.3);
+  const other=request.agent(app);await send(other,'post','/api/auth/login',{email:'other@example.com',password}).expect(200);
+  await send(other,'post',url,{operation:'add',amount:10}).expect(404);
+  for(const body of [{operation:'multiply',amount:1},{operation:'add',amount:0},{operation:'add',amount:-1},{operation:'add',amount:0.001},{operation:'add',amount:1000000001},{operation:'add',amount:1,userId:'other'}])await send(owner,'post',url,body).expect(400);
+  const {body:investment}=await send(owner,'post','/api/months/2026-10/entries',{name:'Fund',type:'investment',category:'Stocks',date:'2026-10-02',amount:10}).expect(201);
+  await send(owner,'post','/api/months/2026-10/entries/'+investment.id+'/adjust',{operation:'add',amount:1}).expect(404);
+  await send(owner,'post',url,{operation:'add',amount:1000000000}).expect(400);
+});

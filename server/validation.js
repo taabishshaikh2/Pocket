@@ -18,9 +18,10 @@ export const tripSchema = z.object({
 }).strict();
 export const contributionSchema = z.object({ amount: amount.refine(n => n > 0, 'Add an amount greater than zero.') }).strict();
 export const entrySchema = z.object({
-  name: z.string().trim().min(1).max(80), amount: amount.refine(n => n > 0, 'Amount must be greater than zero.'),
+  name: z.string().trim().min(1).max(80), amount,
   type: z.enum(['expense', 'investment']), date: dateSchema, category: z.string().trim().min(1).max(60), categoryId: z.string().max(100).optional(), otherReason: z.string().trim().max(200).optional(),
-}).strict();
+}).strict().refine(entry => entry.type === 'expense' || entry.amount > 0, 'Investment amount must be greater than zero.');
+export const adjustmentSchema = z.object({ operation: z.enum(['add', 'subtract']), amount: amount.refine(n => n > 0, 'Enter an amount greater than zero.') }).strict();
 export const credentialsSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(254),
   password: z.string().min(6, 'Use at least 6 characters.').max(72),
@@ -30,7 +31,7 @@ export const importSchema = z.record(monthSchema, z.object({
   entries: z.array(z.object({ id: z.string().min(1).max(100), ...entrySchema.shape }).strict()).max(10000),
 }).strict()).refine(data => Object.entries(data).every(([month, m]) =>
   (!m.received || m.received.startsWith(month)) && (m.salary === 0 || m.received) &&
-  m.entries.every(e => e.date.startsWith(month)) &&
+  m.entries.every(e => e.date.startsWith(month) && (e.type === 'expense' || e.amount > 0)) &&
   new Set(m.entries.map(e => e.id)).size === m.entries.length
 ), 'Imported dates, categories, or transaction IDs are invalid.');
 export function assertMonthDate(month, date) {

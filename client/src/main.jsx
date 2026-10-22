@@ -6,6 +6,7 @@ import Trips from './Trips.jsx';
 import { createApiClient, authenticateAndVerify } from './api.js';
 import AdminPanel from './AdminPanel.jsx';
 import { loadStartupSession } from './startup.js';
+import { adjustmentTotal } from './adjustment.js';
 import './layout.css';
 
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
@@ -60,31 +61,52 @@ function Dashboard({onExpired,adminOpen,user}) {
   <aside><Salary key={`${month}:${record.salary}:${record.received}`} month={month} record={record} disabled={disabled} onSave={values=>mutate(()=>api(`/months/${month}/salary`,{method:'PUT',body:values}),'Salary saved.')}/><section className="panel breakdown"><h2>Where it all goes</h2><p>Your salary, at a glance.</p><div className="allocation">{[[expenses,'#e4b89b'],[investments,'#b8acd4'],[Math.max(remaining,0),'#a7bf80']].map(([n,c])=><i key={c} style={{width:n/denominator*100+'%',background:c}}/>)}</div><div className="legend">{[['expenseDot','Expenses',expenses],['investDot','Investments',investments],['saveDot','Left to save',remaining]].map(([c,l,n])=><React.Fragment key={l}><span><b className={'dot '+c}/>{l}</span><strong>{pct(n)}%</strong></React.Fragment>)}</div><div className="insight">{remaining<0?'↗ Over salary by '+money(-remaining):salary?'✦ '+pct(remaining+investments)+'% of your salary is saved or invested.':'✦ Small steps. Stronger savings.'}</div></section></aside></div>
   <Trips request={api} onExpired={onExpired}/>
   <footer><span className="brand">pocket <small>Make room for what matters.</small></span><span>Private records. Available wherever you sign in.</span></footer>
-  {entry&&<EntryDialog entry={entry} categories={categories} month={month} busy={busy} onClose={()=>setEntry(null)} onSave={values=>mutate(()=>api(`/months/${month}/entries${entry.id?'/'+entry.id:''}`,{method:entry.id?'PUT':'POST',body:values}),entry.id?'Transaction updated.':'Transaction added.')}/>}
+  {entry&&<EntryDialog entry={entry} categories={categories} month={month} onAdjust={values=>mutate(()=>api(`/months/${month}/entries/${entry.id}/adjust`,{method:'POST',body:values}),'Expense amount updated.')} busy={busy} onClose={()=>setEntry(null)} onSave={values=>mutate(()=>api(`/months/${month}/entries${entry.id?'/'+entry.id:''}`,{method:entry.id?'PUT':'POST',body:values}),entry.id?'Transaction updated.':'Transaction added.')}/>}
   {deleting&&<Modal title="Delete transaction?" onClose={()=>!busy&&setDeleting(null)}><p>Remove “{deleting.name}” ({money(deleting.amount)}) from this month?</p><div className="modalButtons"><button disabled={busy} onClick={()=>setDeleting(null)}>Keep it</button><button className="primary" disabled={busy} onClick={()=>mutate(()=>api(`/months/${month}/entries/${deleting.id}`,{method:'DELETE'}),'Transaction deleted.')}>{busy?'Deleting…':'Delete transaction'}</button></div></Modal>}
   </main>;
 }
 function Stat({icon,color,label,value,note}){return <div className="stat"><span className={'icon '+color}>{icon}</span><label>{label}</label><strong>{value}</strong><small>{note}</small></div>;}
 function Salary({month,record,disabled,onSave}){const [amount,setAmount]=useState(record.salary||''),[date,setDate]=useState(record.received||month+'-01');return <section className="panel salary"><div className="panelHead"><h2>Your monthly salary</h2><span>↙</span></div><p>Start with what came in.</p><form onSubmit={e=>{e.preventDefault();onSave({salary:Number(amount),received:date});}}><label htmlFor="salary">Amount received</label><div className="amountInput"><span>₹</span><input id="salary" type="number" inputMode="decimal" min="0" max="1000000000" step="0.01" required value={amount} onChange={e=>setAmount(e.target.value)} disabled={disabled}/></div><label htmlFor="received">Date received</label><input id="received" type="date" required min={month+'-01'} max={month+'-'+new Date(...month.split('-').map(Number),0).getDate()} value={date} onChange={e=>setDate(e.target.value)} disabled={disabled}/><button className="dark" disabled={disabled}>Save salary <span>↗</span></button></form></section>;}
 function Modal({title,onClose,children}){const ref=useRef();useEffect(()=>{const dialog=ref.current;dialog.showModal();return()=>dialog.close();},[]);return <dialog ref={ref} onCancel={e=>{e.preventDefault();onClose();}}><div className="dialogHead"><h2>{title}</h2><button type="button" aria-label="Close" onClick={onClose}>×</button></div>{children}</dialog>;}
-function EntryDialog({entry,categories,month,busy,onClose,onSave}) {
+function EntryDialog({entry,categories,month,busy,onClose,onSave,onAdjust}) {
   const [values,setValues]=useState({...entry,otherReason:entry.otherReason||''}),[error,setError]=useState('');
+  const [amountMode,setAmountMode]=useState('set'),[changeAmount,setChangeAmount]=useState('');
+  const canAdjust=!!entry.id&&entry.type==='expense',adjusting=canAdjust&&amountMode!=='set';
+  const preview=adjustmentTotal(entry.amount,changeAmount,amountMode),negative=preview!==null&&preview<0,tooLarge=preview!==null&&preview>1_000_000_000;
+  function switchMode(mode){setAmountMode(mode);setChangeAmount('');setError('');}
   const options=categories[values.type].filter(c=>c.active||c._id===values.categoryId||(!values.categoryId&&c.label===entry.category&&entry.type===values.type));
   const selected=options.find(c=>c._id===values.categoryId)||options.find(c=>c.label===values.category);
   const set=(key,value)=>setValues(v=>({...v,[key]:value}));
-  async function submit(e){e.preventDefault();setError('');if(!values.date.startsWith(month)){setError('Choose a date within this month.');return;}
+  async function submit(e){e.preventDefault();setError('');
+    if(adjusting){
+      if(preview===null){setError('Enter a positive amount with at most two decimal places.');return;}
+      if(negative){setError('Cannot subtract more than the current expense amount.');return;}
+      if(tooLarge){setError('The adjusted expense exceeds the supported limit.');return;}
+      if(!await onAdjust({operation:amountMode,amount:Number(changeAmount)}))setError('Could not update the amount. Refresh the expense and try again.');
+      return;
+    }
+    if(!values.date.startsWith(month)){setError('Choose a date within this month.');return;}
     const {name,amount,type,date,category,categoryId,otherReason}=values;
     const ok=await onSave({name:name.trim(),amount:Number(amount),type,date,category,...(categoryId?{categoryId}:{}),otherReason:selected?.isOther?otherReason.trim():''});
     if(!ok)setError('Could not save. Check the connection or reload the categories.');
   }
   return <Modal title={entry.id?'Edit transaction':'Add a transaction'} onClose={()=>!busy&&onClose()}><form onSubmit={submit}><fieldset disabled={busy}>
+    {canAdjust&&<div className="amountModes" role="group" aria-label="How to update this expense">{[['set','Set total'],['add','+ Add amount'],['subtract','− Subtract']].map(([mode,label])=><button type="button" key={mode} aria-pressed={amountMode===mode} className={amountMode===mode?'selected':''} onClick={()=>switchMode(mode)}>{label}</button>)}</div>}
+    {adjusting?<>
+      <p className="adjustExpenseName">{entry.name}</p>
+      <div className="adjustCurrent"><span>Current expense</span><strong>{money(entry.amount)}</strong></div>
+      <label htmlFor="adjust-amount">Amount to {amountMode==='add'?'add':'subtract'} (₹)</label><input id="adjust-amount" type="number" inputMode="decimal" min="0.01" max="1000000000" step="0.01" value={changeAmount} onChange={e=>setChangeAmount(e.target.value)} required autoFocus/>
+      <div className={'adjustPreview'+(negative||tooLarge?' invalid':'')} aria-live="polite"><span>New expense total</span><strong>{preview===null?'—':money(preview)}</strong>{preview!==null&&<small>{money(entry.amount)} {amountMode==='add'?'+':'−'} {money(Number(changeAmount))}</small>}</div>
+      {negative&&<p className="error" role="alert">Cannot subtract more than the current expense amount.</p>}{tooLarge&&<p className="error" role="alert">The new total is too large.</p>}
+      <small className="hint">The change applies to the latest saved amount. Your monthly totals update automatically.</small>
+    </>:<>
     <label htmlFor="type">Type</label><select id="type" value={values.type} onChange={e=>{const first=categories[e.target.value].find(c=>c.active);setValues(v=>({...v,type:e.target.value,category:first?.label||'Other',categoryId:first?._id,otherReason:''}));}}><option value="expense">Expense</option><option value="investment">Investment</option></select>
     <label htmlFor="name">What was it for?</label><input id="name" value={values.name} onChange={e=>set('name',e.target.value)} maxLength={80} required autoFocus/>
-    <label htmlFor="amount">Amount (₹)</label><input id="amount" type="number" inputMode="decimal" min="0.01" max="1000000000" step="0.01" value={values.amount} onChange={e=>set('amount',e.target.value)} required/>
+    <label htmlFor="amount">Amount (₹)</label><input id="amount" type="number" inputMode="decimal" min={entry.id&&values.type==='expense'?0:0.01} max="1000000000" step="0.01" value={values.amount} onChange={e=>set('amount',e.target.value)} required/>
     <label htmlFor="date">Date</label><input id="date" type="date" value={values.date} onChange={e=>set('date',e.target.value)} required/>
     <label htmlFor="category">Category</label><select id="category" value={selected?._id||''} required onChange={e=>{const category=options.find(c=>c._id===e.target.value);setValues(v=>({...v,categoryId:category._id,category:category.label,otherReason:category.isOther?v.otherReason:''}));}}>{options.map(c=><option key={c._id} value={c._id}>{c.label}{!c.active?' (archived)':''}</option>)}</select>
     {selected?.isOther&&<><label htmlFor="other-reason">Why Other? <span className="optional">(optional)</span></label><textarea id="other-reason" value={values.otherReason} onChange={e=>set('otherReason',e.target.value)} maxLength={200} rows={3} placeholder="A little more detail, if you’d like"/><small className="hint">{values.otherReason.length}/200 characters</small></>}
-    {error&&<p className="error" role="alert">{error}</p>}<button className="primary">{busy?'Saving…':'Save transaction'}</button>
+    </>}{error&&<p className="error" role="alert">{error}</p>}<button className="primary" disabled={adjusting&&(preview===null||negative||tooLarge)}>{busy?'Saving…':adjusting?'Update expense':'Save transaction'}</button>
   </fieldset></form></Modal>;
 }
 createRoot(document.getElementById('root')).render(<App/>);

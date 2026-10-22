@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { User, Month, Trip, Category, Settings, Audit } from './models.js';
 import { seedCategories, resolveCategory, validateImportCategories, categoryNameTaken, fail } from './catalog.js';
-import { categoryCreateSchema, categoryUpdateSchema, accountUpdateSchema, settingsSchema, monthSchema, salarySchema, entrySchema, credentialsSchema, importSchema, assertMonthDate, summarize, tripSchema, contributionSchema, cents } from './validation.js';
+import { categoryCreateSchema, categoryUpdateSchema, accountUpdateSchema, settingsSchema, adjustmentSchema, monthSchema, salarySchema, entrySchema, credentialsSchema, importSchema, assertMonthDate, summarize, tripSchema, contributionSchema, cents } from './validation.js';
 
 const regenerate = req => new Promise((resolve, reject) => req.session.regenerate(err => err ? reject(err) : resolve()));
 const persist = req => new Promise((resolve, reject) => req.session.save(err => err ? reject(err) : resolve()));
@@ -140,12 +140,14 @@ export function createApp({ store, secret, origin, production = false, trustProx
   });
   app.post('/api/months/:month/entries', async (req, res) => {
     const month = monthSchema.parse(req.params.month), values = entrySchema.parse(req.body); assertMonthDate(month, values.date);
+    if (values.amount <= 0) fail('Amount must be greater than zero for a new transaction.');
     await ensureCatalog(); const resolved = await resolveCategory(values);
     const entry = { id: randomUUID(), ...resolved };
     await Month.updateOne({ userId: req.session.userId, month }, { $push: { entries: entry } }, { upsert: true, runValidators: true }); res.status(201).json(entry);
   });
   app.put('/api/months/:month/entries/:id', async (req, res) => {
     const month = monthSchema.parse(req.params.month), values = entrySchema.parse(req.body); assertMonthDate(month, values.date);
+    if (values.type === 'investment' && values.amount <= 0) fail('Investment amount must be greater than zero.');
     await ensureCatalog();
     const record = await Month.findOne({ userId: req.session.userId, month, 'entries.id': req.params.id }).lean();
     const previous = record?.entries.find(e => e.id === req.params.id);
@@ -153,6 +155,29 @@ export function createApp({ store, secret, origin, production = false, trustProx
     const resolved = await resolveCategory(values, previous);
     const result = await Month.updateOne({ userId: req.session.userId, month, 'entries.id': req.params.id }, { $set: { 'entries.$': { id: req.params.id, ...resolved } } }, { runValidators: true });
     if (!result.matchedCount) return res.status(404).json({ error: 'Transaction not found.' }); res.sendStatus(204);
+  });
+  app.post('/api/months/:month/entries/:id/adjust', async (req, res) => {
+    const month = monthSchema.parse(req.params.month), values = adjustmentSchema.parse(req.body);
+    const delta = cents(values.amount) * (values.operation === 'add' ? 1 : -1);
+    const allowed = values.operation === 'subtract'
+      ? { $gte: values.amount }
+      : { $lte: (cents(1_000_000_000) - delta) / 100 };
+    // Match and update in one database operation so simultaneous adjustments accumulate.
+    // Round integer cents before conversion back to rupees to avoid floating-point drift.
+    const record = await Month.findOneAndUpdate({ userId: req.session.userId, month,
+      entries: { $elemMatch: { id: req.params.id, type: 'expense', amount: allowed } },
+    }, [{ $set: { entries: { $map: { input: '$entries', as: 'entry', in: {
+      $cond: [{ $eq: ['$$entry.id', { $literal: req.params.id }] },
+        { $mergeObjects: ['$$entry', { amount: { $divide: [
+          { $add: [{ $round: [{ $multiply: ['$$entry.amount', 100] }, 0] }, delta] }, 100,
+        ] } }] }, '$$entry'],
+    } } } } }], { new: true });
+    if (!record) {
+      const exists = await Month.exists({ userId: req.session.userId, month, entries: { $elemMatch: { id: req.params.id, type: 'expense' } } });
+      if (!exists) fail('Expense not found.', 404);
+      fail(values.operation === 'subtract' ? 'Cannot subtract more than the current expense amount.' : 'The adjusted expense exceeds the supported limit.');
+    }
+    res.json(record.entries.find(entry => entry.id === req.params.id));
   });
   app.delete('/api/months/:month/entries/:id', async (req, res) => {
     const month = monthSchema.parse(req.params.month);
